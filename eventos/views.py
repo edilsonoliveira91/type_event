@@ -1,9 +1,14 @@
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, HttpResponse, get_object_or_404
 from django.urls import reverse
 from django.contrib.auth.decorators import login_required #faz com que seja obrigado a estar logado para visualizar a pagina
 from .models import Evento
 from django.contrib import messages
 from django.contrib.messages import constants
+from django.http import Http404
+import csv
+from secrets import token_urlsafe
+import os
+from django.conf import settings
 
 
 # VAI SER PERMITIDA APENAS PARA PESSOAS LOGADAS
@@ -44,3 +49,56 @@ def novo_evento(request):
 
         messages.add_message(request, constants.SUCCESS, 'Evento cadastrado com sucesso.')
         return redirect(reverse('novo_evento'))
+
+
+@login_required
+def gerenciar_evento(request):
+    if request.method == "GET":
+        #VAMOS CAPTURAR DADOS DO MODELS PARA MOSTRAR PRO USUARIO.. QUERY
+        eventos = Evento.objects.filter(criador=request.user) # ira filtrar no banco de dados todos os eventos de acordo com o usuario que esta logado, ou seja, so vai mostrar os eventos do usuario logado. Para mostrar no frontend, precisamos usar o render e informar duas coisas: {'nome': nome da varialvel que voce criou para puxar os dados.}
+        nome = request.GET.get('nome')
+        if nome:
+            eventos = eventos.filter(nome__contains=nome)
+        return render(request, 'gerenciar_evento.html', {'eventos': eventos})
+    
+
+@login_required
+def inscrever_evento(request, id):
+    evento = get_object_or_404(Evento, id=id)
+    if request.method == "GET":
+        return render(request, 'inscrever_evento.html', {'evento': evento})
+    elif request.method == "POST":
+
+        evento.participantes.add(request.user)
+        evento.save()
+
+
+        messages.add_message(request, constants.SUCCESS, 'Inscrição realizada com sucesso!')
+        return redirect(f'/eventos/inscrever_evento/{evento.id}')
+    
+
+def participantes_evento(request, id):
+    evento = get_object_or_404(Evento, id=id)
+    if not evento.criador == request.user:
+        raise Http404('Esse evento não é seu!')
+    if request.method == "GET":
+        participantes = evento.participantes.all() # isso vai fazer mostrar todos os participantes do evento mas se voce precisa mostrar apenas 3 ou menos ou mais, voce precisa utilizar o [::3] na frente do .all().
+        return render(request, 'participantes_evento.html', {'participantes': participantes, 'evento': evento})
+    
+
+def gerar_csv(request, id):
+    evento = get_object_or_404(Evento, id=id)
+    if not evento.criador == request.user:
+        raise Http404('Esse evento não é seu!')
+    participantes = evento.participantes.all() # buscando todos os participantes
+
+    token = f'{token_urlsafe(6)}.csv'
+    path = os.path.join(settings.MEDIA_ROOT, token)
+
+    with open(path, 'w') as arq:
+        writer = csv.writer(arq, delimiter=",")
+        for participante in participantes:
+            x = (participante.username, participante.email)
+            writer.writerow(x)
+
+    return redirect(f'/media/{token}')
