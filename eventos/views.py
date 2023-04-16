@@ -1,7 +1,7 @@
 from django.shortcuts import render, redirect, HttpResponse, get_object_or_404
 from django.urls import reverse
 from django.contrib.auth.decorators import login_required #faz com que seja obrigado a estar logado para visualizar a pagina
-from .models import Evento
+from .models import Evento, Certificado
 from django.contrib import messages
 from django.contrib.messages import constants
 from django.http import Http404
@@ -9,6 +9,10 @@ import csv
 from secrets import token_urlsafe
 import os
 from django.conf import settings
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
+from django.core.files.uploadedfile import InMemoryUploadedFile
+import sys
 
 
 # VAI SER PERMITIDA APENAS PARA PESSOAS LOGADAS
@@ -102,3 +106,70 @@ def gerar_csv(request, id):
             writer.writerow(x)
 
     return redirect(f'/media/{token}')
+
+
+def certificados_evento(request, id):
+    evento = get_object_or_404(Evento, id=id)
+    if not evento.criador == request.user:
+        raise Http404('Esse evento não é seu')
+    
+    if request.method == "GET":
+        qtd_certificados = evento.participantes.all().count() - Certificado.objects.filter(evento=evento).count()
+        return render(request, 'certificados_evento.html', {'qtd_certificados': qtd_certificados, 'evento': evento})
+    
+
+def gerar_certificado(request, id):
+    evento = get_object_or_404(Evento, id=id)
+    if not evento.criador == request.user:
+        raise Http404('Esse evento não é seu')
+    
+    #Executa a concatenação dos arquivos da raiz com o template e fonte.
+    path_template = os.path.join(settings.BASE_DIR, 'templates/static/evento/img/template_certificado.png')
+    path_fonte = os.path.join(settings.BASE_DIR, 'templates/static/fontes/arimo.ttf')
+
+    #Vai passar por cada participante que precisa gerar um certificado.
+    for participante in evento.participantes.all():
+        img = Image.open(path_template)
+        draw = ImageDraw.Draw(img)
+
+        #Variavel que define o tamanho de fonte para cada escrita.
+        fonte_nome = ImageFont.truetype(path_fonte, 80)
+        fonte_info = ImageFont.truetype(path_fonte, 30)
+
+        #Faz com que seja escrito em cima da imagem com as possicoes dada em pixels.
+        draw.text((230, 651), f"{participante.username}", font=fonte_nome, fill=(0,0,0))
+        draw.text((761, 782), f"{evento.nome}", font=fonte_info, fill=(0,0,0))
+        draw.text((816, 849), f"{evento.carga_horaria}", font=fonte_info, fill=(0,0,0))
+
+       #Salva a imagem editada na memoria ram que ainda nao foi salva direto no banco de dados.
+        output = BytesIO()
+        img.save(output, format="png", quality=100)
+        #Faz o "ponteiro" voltar para o começo da escrita para que seja lido toda a mensagen.
+        output.seek(0)
+
+        #Faz a conversao do arquivo editado no python para que o mesmo entenda o formato do arquivo que sera salvo.
+        img_final = InMemoryUploadedFile(output, 'ImageField', f'{token_urlsafe(8)}.png', 'img/jpeg', sys.getsizeof(output), None)
+
+        #passa o paramentro que ira dentro da funcao
+        certificado_gerado = Certificado(certificado=img_final, participante=participante, evento=evento)
+        #salva de fato no banco de dados o certificado.
+        certificado_gerado.save()
+
+
+    messages.add_message(request, constants.SUCCESS, 'Certificados gerado com sucesso!')
+    return redirect(reverse('certificados_evento', kwargs={'id': evento.id}))
+
+def procurar_certificado(request, id):
+    evento = get_object_or_404(Evento, id=id)
+    if not evento.criador == request.user:
+        raise Http404('Esse evento não é seu')
+    
+    email = request.POST.get('email')
+    
+    certificado = Certificado.objects.filter(evento=evento).filter(participante__email=email).first()
+
+    if not certificado:
+        messages.add_message(request, constants.ERROR, 'Esse certificado ainda não foi gerado.')
+        return redirect(reverse('certificados_evento', kwargs={'id': evento.id}))
+    else:
+        return redirect(certificado.certificado.url)
